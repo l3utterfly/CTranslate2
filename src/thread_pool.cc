@@ -86,7 +86,7 @@ namespace ctranslate2 {
     cpu_set_t cpuset;
     CPU_ZERO(&cpuset);
     CPU_SET(index, &cpuset);
-    const int status = pthread_setaffinity_np(thread.native_handle(), sizeof (cpu_set_t), &cpuset);
+    const int status = sched_setaffinity(thread.native_handle(), sizeof (cpu_set_t), &cpuset);
     if (status != 0) {
       throw std::runtime_error("Error calling pthread_setaffinity_np: "
                                + std::to_string(status));
