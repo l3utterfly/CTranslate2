@@ -483,10 +483,11 @@ endif()
 
 if (WITH_RUY)
   add_definitions(-DCT2_WITH_RUY)
+  set(_ct2_saved_pic "${CMAKE_POSITION_INDEPENDENT_CODE}")
   set(CMAKE_POSITION_INDEPENDENT_CODE ON)
   set(CPUINFO_LIBRARY_TYPE static CACHE STRING "cpuinfo library type")
   add_subdirectory(third_party/ruy EXCLUDE_FROM_ALL)
-  unset(CMAKE_POSITION_INDEPENDENT_CODE)
+  set(CMAKE_POSITION_INDEPENDENT_CODE "${_ct2_saved_pic}")
   list(APPEND LIBRARIES ruy)
 endif()
 
