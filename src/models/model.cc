@@ -80,8 +80,10 @@ namespace ctranslate2 {
     template<>
     std::string consume(std::istream& in) {
       const auto str_length = consume<uint16_t>(in);
+      if (str_length == 0)
+        throw std::runtime_error("Invalid string length in " + binary_file);
       const auto c_str = consume<char>(in, str_length);
-      std::string str(c_str);
+      std::string str(c_str, str_length - 1);
       delete [] c_str;
       return str;
     }
@@ -173,7 +175,7 @@ namespace ctranslate2 {
       _device_index = index;
     }
 
-    void Model::set_compute_type(ComputeType type, Device device, int device_index) {
+    void Model::set_compute_type(ComputeType type, Device device, int device_index, bool update_weight) {
       if (_device != Device::CPU)
         throw std::runtime_error("set_compute_type expects the variables to be on CPU");
 
@@ -187,46 +189,47 @@ namespace ctranslate2 {
                                                              device,
                                                              device_index);
 
-      DataType weight_dtype = DataType::FLOAT32;
-      DataType float_dtype = DataType::FLOAT32;
-      std::tie(weight_dtype, float_dtype) = compute_type_to_data_type(_effective_compute_type);
-      if (_use_flash_attention && (float_dtype != DataType::FLOAT16 && float_dtype != DataType::BFLOAT16))
-        throw std::runtime_error("FlashAttention only support fp16 and bf16 data type");
+      if (update_weight) {
+        DataType weight_dtype = DataType::FLOAT32;
+        DataType float_dtype = DataType::FLOAT32;
+        std::tie(weight_dtype, float_dtype) = compute_type_to_data_type(_effective_compute_type);
+        if (_use_flash_attention && (float_dtype != DataType::FLOAT16 && float_dtype != DataType::BFLOAT16))
+          throw std::runtime_error("FlashAttention only support fp16 and bf16 data type");
 
-      const auto variable_index = _variable_index;
-      for (auto& variable_pair : variable_index) {
-        const auto& name = variable_pair.first;
-        auto& variable = *variable_pair.second;
+        const auto variable_index = _variable_index;
+        for (auto& variable_pair : variable_index) {
+          const auto &name = variable_pair.first;
+          auto &variable = *variable_pair.second;
 
-        // Convert "weight" variables to the expected compute type.
-        // Other float variables (e.g. biases) may be converted to another float type.
-        if (is_quantizable(name)) {
-          auto variable_weight_dtype = weight_dtype;
-          // For conv layer, we need to reshape to ensure dtype as its weights are 3D.
-          auto is_conv = name.find("conv") != std::string::npos;
-          auto kernel_size = -1;
-          if (is_conv) {
-            kernel_size = variable.dim(2);
-            variable.reshape({variable.dim(0), variable.dim(1) * variable.dim(2)});
-            // For CUDA and DNNL backend, quantized convolution is not supported. Hence, convert to float_dtype.
-            if (device == Device::CUDA
-                #ifdef CT2_WITH_DNNL
-                  || true
-                #endif
-            ) {
-                  variable_weight_dtype = float_dtype;
+          // Convert "weight" variables to the expected compute type.
+          // Other float variables (e.g. biases) may be converted to another float type.
+          if (is_quantizable(name)) {
+            auto variable_weight_dtype = weight_dtype;
+            // For conv layer, we need to reshape to ensure dtype as its weights are 3D.
+            auto is_conv = name.find("conv") != std::string::npos;
+            auto kernel_size = -1;
+            if (is_conv) {
+              kernel_size = variable.dim(2);
+              variable.reshape({variable.dim(0), variable.dim(1) * variable.dim(2)});
+              // For CUDA and DNNL backend, quantized convolution is not supported. Hence, convert to float_dtype.
+              if (device == Device::CUDA
+#ifdef CT2_WITH_DNNL
+                || true
+#endif
+                ) {
+                variable_weight_dtype = float_dtype;
+              }
             }
-          }
-          ensure_dtype(name, variable, variable_weight_dtype);
-          // Undo reshape for conv weights
-          if (is_conv) {
-            variable.reshape({variable.dim(0), variable.dim(1) / kernel_size, kernel_size});
-          }
+            ensure_dtype(name, variable, variable_weight_dtype);
+            // Undo reshape for conv weights
+            if (is_conv) {
+              variable.reshape({variable.dim(0), variable.dim(1) / kernel_size, kernel_size});
+            }
+          } else if (is_convertible(variable, name)
+                     && is_float_type(variable.dtype())
+                     && variable.dtype() != float_dtype)
+            variable = variable.to(float_dtype);
         }
-        else if (is_convertible(variable, name)
-                 && is_float_type(variable.dtype())
-                 && variable.dtype() != float_dtype)
-          variable = variable.to(float_dtype);
       }
     }
 
@@ -412,7 +415,8 @@ namespace ctranslate2 {
         }
 
         // If requested, linear weights can be packed for the Gemm call.
-        if (pack_weights && is_packable(name)) {
+        // Only 2D weights are supported; Conv weights are 3D and use a different code path.
+        if (pack_weights && is_packable(name) && weight.rank() == 2) {
           StorageView packed_weight = ops::Gemm::pack_b_input(weight, transpose, k, n, alpha);
           register_variable(name + "_packed", std::move(packed_weight));
           remove_variable(name);  // The original weight is no longer needed.
@@ -445,18 +449,10 @@ namespace ctranslate2 {
       size_t num = partitions_size.size();
       std::vector<StorageView*> p_outputs(num);
 
-      for (int i = 0; i < num; ++i) {
+      for (size_t i = 0; i < num; ++i) {
         p_outputs[i] = &outputs[i];
       }
       ops::Split(dim, partitions_size)(variable, p_outputs);
-    }
-
-    static bool replace(std::string& str, const std::string& from, const std::string& to) {
-      size_t start_pos = str.find(from);
-      if (start_pos == std::string::npos)
-        return false;
-      str.replace(start_pos, from.length(), to);
-      return true;
     }
 
     static void check_version(const size_t saved_version,
@@ -637,6 +633,9 @@ namespace ctranslate2 {
                        " the config.json could lead to error! Try using the latest version of converters");
       }
 
+      if (model->config.contains("quantization_type"))
+        model->set_quant_method(model->config["quantization_type"]);
+
       for (uint32_t i = 0; i < num_variables; ++i) {
         auto name = consume<std::string>(model_file);
         const size_t rank = consume<uint8_t>(model_file);
@@ -657,6 +656,8 @@ namespace ctranslate2 {
         }
 
         StorageView variable(std::move(shape), dtype);
+        if (num_bytes != variable.size() * variable.item_size())
+          throw std::runtime_error("Variable '" + name + "' has an invalid payload size");
         consume<char>(model_file, num_bytes, static_cast<char*>(variable.buffer()));
         if (tensor_parallel) {
           int outer_dim = 0;
@@ -736,16 +737,28 @@ namespace ctranslate2 {
                 split_variables(std::move(variable), outer_dim, partitions_size, outputs);
               }
             };
-            if (outputs.size() > current_index && !outputs[current_index].empty())
+            if (static_cast<int>(outputs.size()) > current_index && !outputs[current_index].empty())
               variable = std::move(outputs[current_index]);
           }
         }
-
         model->register_variable(std::move(name), std::move(variable));
       }
 
       // Maybe quantize/dequantize/convert the variables to match the requested compute type.
-      model->set_compute_type(compute_type, device, device_index);
+      // if model is quantized with a specific type different with CT2, it use the specific kernel
+      // So have to keep the compute type for it.
+      switch (model->quant_method()) {
+        case QUANTIZATION_TYPE::CT2:
+          model->set_compute_type(compute_type, device, device_index);
+          break;
+        case QUANTIZATION_TYPE::AWQ_GEMM:
+        case QUANTIZATION_TYPE::AWQ_GEMV:
+          model->set_compute_type(ComputeType::FLOAT16, device, device_index, false);
+          break;
+        default:
+          throw std::invalid_argument("Quantization type is not supported");
+          break;
+      }
 
       // Move variables to the target device.
       model->set_device(device, device_index);
@@ -759,6 +772,7 @@ namespace ctranslate2 {
           model->register_variable_alias(alias, variable_name);
           // Also alias the quantization scale that could be associated to variable_name.
           model->register_variable_alias(alias + "_scale", variable_name + "_scale");
+          model->register_variable_alias(alias + "_zero", variable_name + "_zero");
         }
       }
 
@@ -826,16 +840,22 @@ namespace ctranslate2 {
                      " running independently a model in each device");
       }
 
-      bool is_sm8x = false;
-      bool is_sm90 = false;
+      bool supports_flash_attention = false;
       if (device == Device::CUDA) {
         int device_id = ctranslate2::get_device_index(ctranslate2::Device::CUDA);
         auto dprops = ctranslate2::cuda::get_device_properties(device_id);
-        is_sm8x = dprops.major == 8 && dprops.minor >= 0;
-        is_sm90 = dprops.major == 9 && dprops.minor == 0;
+#ifdef CT2_USE_HIP
+        supports_flash_attention = false;
+#else
+        supports_flash_attention = dprops.major >= 8;
+#endif
       }
-      if (use_flash_attention && (device != Device::CUDA || (!is_sm8x && !is_sm90))) {
+      if (use_flash_attention && !supports_flash_attention) {
+#ifdef CT2_USE_HIP
+        throw std::invalid_argument("FlashAttention not supported on ROCm.");
+#else
         throw std::invalid_argument("FlashAttention only supports Ampere GPUs or newer.");
+#endif
       }
 #endif
 

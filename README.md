@@ -8,8 +8,8 @@ The project implements a custom runtime that applies many performance optimizati
 
 The following model types are currently supported:
 
-* Encoder-decoder models: Transformer base/big, M2M-100, NLLB, BART, mBART, Pegasus, T5, Whisper
-* Decoder-only models: GPT-2, GPT-J, GPT-NeoX, OPT, BLOOM, MPT, Llama, Mistral, Gemma, CodeGen, GPTBigCode, Falcon
+* Encoder-decoder models: Transformer base/big, M2M-100, NLLB, BART, mBART, Pegasus, T5, Whisper, T5Gemma, T5Gemma2, MADLAD-400
+* Decoder-only models: GPT-2, GPT-J, GPT-NeoX, OPT, BLOOM, MPT, Llama, Mistral, Gemma, CodeGen, GPTBigCode, Falcon, Qwen2
 * Encoder-only models: BERT, DistilBERT, XLM-RoBERTa
 
 Compatible models should be first converted into an optimized model format. The library includes converters for multiple frameworks:
@@ -26,7 +26,7 @@ The project is production-oriented and comes with [backward compatibility guaran
 ## Key features
 
 * **Fast and efficient execution on CPU and GPU**<br/>The execution [is significantly faster and requires less resources](#benchmarks) than general-purpose deep learning frameworks on supported models and tasks thanks to many advanced optimizations: layer fusion, padding removal, batch reordering, in-place operations, caching mechanism, etc.
-* **Quantization and reduced precision**<br/>The model serialization and computation support weights with [reduced precision](https://opennmt.net/CTranslate2/quantization.html): 16-bit floating points (FP16), 16-bit brain floating points (BF16), 16-bit integers (INT16), and 8-bit integers (INT8).
+* **Quantization and reduced precision**<br/>The model serialization and computation support weights with [reduced precision](https://opennmt.net/CTranslate2/quantization.html): 16-bit floating points (FP16), 16-bit brain floating points (BF16), 16-bit integers (INT16), 8-bit integers (INT8) and AWQ quantization (INT4).
 * **Multiple CPU architectures support**<br/>The project supports x86-64 and AArch64/ARM64 processors and integrates multiple backends that are optimized for these platforms: [Intel MKL](https://software.intel.com/content/www/us/en/develop/tools/oneapi/components/onemkl.html), [oneDNN](https://github.com/oneapi-src/oneDNN), [OpenBLAS](https://www.openblas.net/), [Ruy](https://github.com/google/ruy), and [Apple Accelerate](https://developer.apple.com/documentation/accelerate).
 * **Automatic CPU detection and code dispatch**<br/>One binary can include multiple backends (e.g. Intel MKL and oneDNN) and instruction set architectures (e.g. AVX, AVX2) that are automatically selected at runtime based on the CPU information.
 * **Parallel and asynchronous execution**<br/>Multiple batches can be processed in parallel and asynchronously using multiple GPUs or CPU cores.
@@ -57,6 +57,12 @@ generator.generate_batch(start_tokens)
 ```
 
 See the [documentation](https://opennmt.net/CTranslate2) for more information and examples.
+
+If you have an AMD ROCm GPU, we provide specific Python wheels on the [releases page](https://github.com/OpenNMT/CTranslate2/releases/).
+
+## Web Server
+
+[ctranslate2-web-server](https://github.com/jordimas/ctranslate2-web-server) is a web server built on top of CTranslate2 that exposes an OpenAI-compatible REST API, making it easy to integrate CTranslate2 models into applications that already support the OpenAI API.
 
 ## Benchmarks
 
@@ -118,6 +124,16 @@ Executed with 4 threads on a [*c5.2xlarge*](https://aws.amazon.com/ec2/instance-
 | - int8 + float16 | 8362.7 | 813MB | 766MB | 27.90 |
 
 Executed with CUDA 11 on a [*g5.xlarge*](https://aws.amazon.com/ec2/instance-types/g5/) Amazon EC2 instance equipped with a NVIDIA A10G GPU (driver version: 510.47.03).
+
+## Contributing
+
+CTranslate2 is a community-driven project. We welcome contributions of all kinds:
+* **New Model Support:** Help us implement more Transformer architectures.
+* **Performance:** Propose optimizations for CPU or GPU kernels.
+* **Bug Reports:** Open an issue if you find something not working as expected.
+* **Documentation:** Improve our guides or add new examples.
+
+Check out our [Contributing Guide](CONTRIBUTING.md) to learn how to set up your development environment.
 
 ## Additional resources
 

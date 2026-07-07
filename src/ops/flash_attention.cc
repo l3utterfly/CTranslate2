@@ -4,9 +4,10 @@
 
 namespace ctranslate2 {
   namespace ops {
-    FlashAttention::FlashAttention(float queries_scale, dim_t sliding_window)
+    FlashAttention::FlashAttention(float queries_scale, dim_t sliding_window, bool is_causal)
     : _queries_scale(queries_scale)
-    ,_sliding_window(sliding_window)
+    , _sliding_window(sliding_window)
+    , _is_causal(is_causal)
     {
     }
 
@@ -23,6 +24,7 @@ namespace ctranslate2 {
                                     const bool rotary_interleave,
                                     StorageView* alibi,
                                     dim_t offset) const {
+      PROFILE("FlashAttention");
       DEVICE_DISPATCH(queries.device(), compute<D>(queries, keys, values, output, cached_keys, cached_values,
                                                    attention, return_normalized_attention,
                                                    rotary_cos, rotary_sin, rotary_interleave, alibi, offset));

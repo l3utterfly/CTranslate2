@@ -72,6 +72,8 @@ namespace ctranslate2 {
     enum class RotaryScalingType {
       None = -1,
       Linear,
+      Su,
+      Llama3,
     };
 
     class RotaryEmbeddings {
@@ -82,16 +84,22 @@ namespace ctranslate2 {
                        const float scaling_factor = 1,
                        const float base = 10000,
                        const dim_t num_initial_positions = 2048,
+                       const StorageView* long_scaling_factor = nullptr,
+                       const StorageView* short_scaling_factor = nullptr,
+                       const float low_freq_factor = 1.0,
+                       const float high_freq_factor = 4.0,
+                       const dim_t original_max_position_embeddings = 0,
+                       const dim_t max_position_embeddings = 0,
                        const bool transpose = true);
 
-      void apply(StorageView& x, const dim_t offset = 0, bool apply = true);
+      void apply(StorageView& x, const dim_t offset = 0, bool fa2 = false);
 
-      StorageView& get_cos() {
-        return _cos;
+      StorageView& get_cos_half() {
+        return *_cos_half;
       }
 
-      StorageView& get_sin() {
-        return _sin;
+      StorageView& get_sin_half() {
+        return *_sin_half;
       }
 
       bool get_interleave() const {
@@ -110,11 +118,19 @@ namespace ctranslate2 {
       const float _scaling_factor;
       const float _base;
       const dim_t _num_initial_positions;
+      std::unique_ptr<StorageView> _rotary_scaling_long_factor;
+      std::unique_ptr<StorageView> _rotary_scaling_short_factor;
+      const float _rotary_low_freq_factor;
+      const float _rotary_high_freq_factor;
+      const dim_t _original_max_position_embeddings;
+      const dim_t _max_position_embeddings;
       const ops::Rotary _rotary_op;
       const bool _transpose;
 
       StorageView _sin;
       StorageView _cos;
+      std::unique_ptr<StorageView> _sin_half;
+      std::unique_ptr<StorageView> _cos_half;
     };
 
 

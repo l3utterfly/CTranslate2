@@ -7,7 +7,6 @@
 
 #include "dispatch.h"
 #include "cpu/parallel.h"
-#include <iostream>
 
 namespace ctranslate2 {
   namespace layers {
@@ -80,13 +79,32 @@ namespace ctranslate2 {
         scope + "/rotary_scaling_type", -1);
       const auto scaling_factor = model.get_attribute_with_default<float>(
         scope + "/rotary_scaling_factor", 1.f);
+      const auto rotary_long_factor = model.get_variable_if_exists(scope +
+                                                                        "/rotary_scaling_long_factor");
+      const auto rotary_short_factor = model.get_variable_if_exists(scope +
+                                                                   "/rotary_scaling_short_factor");
+      const auto original_max_position_embeddings   = model.get_attribute_with_default<int32_t>(
+        scope + "/original_max_position_embeddings", 0);
 
+      const auto max_position_embeddings   = model.get_attribute_with_default<int32_t>(
+        scope + "/max_position_embeddings", 0);
+
+      const auto rotary_high_freq_factor = model.get_attribute_with_default<float>(scope +
+                                                                        "/rotary_high_freq_factor", 4.0);
+      const auto rotary_low_freq_factor = model.get_attribute_with_default<float>(scope +
+                                                                        "/rotary_low_freq_factor", 1.0);
       return std::make_unique<RotaryEmbeddings>(rotary_dim,
                                                 interleave,
                                                 scaling_type,
                                                 scaling_factor,
                                                 base,
                                                 /*num_initial_positions*/2048,
+                                                rotary_long_factor,
+                                                rotary_short_factor,
+                                                rotary_low_freq_factor,
+                                                rotary_high_freq_factor,
+                                                original_max_position_embeddings,
+                                                max_position_embeddings,
                                                 transpose);
     }
 
@@ -162,6 +180,12 @@ namespace ctranslate2 {
                                        const float scaling_factor,
                                        const float base,
                                        const dim_t num_initial_positions,
+                                       const StorageView* long_scaling_factor,
+                                       const StorageView* short_scaling_factor,
+                                       const float low_freq_factor,
+                                       const float high_freq_factor,
+                                       const dim_t original_max_position_embeddings,
+                                       const dim_t max_position_embeddings,
                                        const bool transpose)
       : _dim(dim)
       , _interleave(interleave)
@@ -169,12 +193,24 @@ namespace ctranslate2 {
       , _scaling_factor(scaling_factor)
       , _base(base)
       , _num_initial_positions(num_initial_positions)
+      , _rotary_scaling_long_factor(long_scaling_factor ?
+                                    std::make_unique<StorageView>(*long_scaling_factor) : nullptr)
+      , _rotary_scaling_short_factor(short_scaling_factor ?
+                                    std::make_unique<StorageView>(*short_scaling_factor) : nullptr)
+      , _rotary_low_freq_factor(low_freq_factor)
+      , _rotary_high_freq_factor(high_freq_factor)
+      , _original_max_position_embeddings(original_max_position_embeddings)
+      , _max_position_embeddings(max_position_embeddings)
       , _rotary_op(dim, interleave)
       , _transpose(transpose)
     {
+      if (_rotary_scaling_long_factor && _rotary_scaling_long_factor->device() != Device::CPU)
+        _rotary_scaling_long_factor = std::make_unique<StorageView>(_rotary_scaling_long_factor->to(Device::CPU));
+      if (_rotary_scaling_short_factor && _rotary_scaling_short_factor->device() != Device::CPU)
+        _rotary_scaling_short_factor = std::make_unique<StorageView>(_rotary_scaling_short_factor->to(Device::CPU));
     }
 
-    void RotaryEmbeddings::apply(StorageView& x, const dim_t offset, bool apply) {
+    void RotaryEmbeddings::apply(StorageView& x, const dim_t offset, bool fa2) {
       const Device device = x.device();
       const DataType dtype = x.dtype();
       const dim_t max_time = _transpose ? x.dim(-2) : x.dim(-3);
@@ -184,8 +220,20 @@ namespace ctranslate2 {
         const dim_t cur_num_positions = _sin ? _sin.dim(0) : 0;
         const dim_t new_num_positions = std::max(offset + max_time, cur_num_positions + _num_initial_positions);
         initialize(new_num_positions, dim, device, dtype);
+        if (fa2) {
+          if (!_sin_half)
+          {
+            _sin_half = std::make_unique<StorageView>(dtype, device);
+            _cos_half = std::make_unique<StorageView>(dtype, device);
+          }
+          const ops::Slide slide_op(1, 0, dim / 2);
+          slide_op(_cos, *_cos_half);
+          slide_op(_sin, *_sin_half);
+          if (offset != 0)
+            return;
+        }
       }
-      if (!apply)
+      if (offset != 0 && fa2)
         return;
 
       StorageView sin(dtype, device);
@@ -206,14 +254,51 @@ namespace ctranslate2 {
                                       const Device device,
                                       const DataType dtype) {
       StorageView inv_freq({1, dim / 2});
-      for (dim_t i = 0; i < inv_freq.size(); ++i)
-        inv_freq.at<float>(i) = 1.f / std::pow(_base, float(i * 2) / float(dim));
+      if (_scaling_type == RotaryScalingType::Su) {
+        StorageView* scaling_factor;
+        for (dim_t i = 0; i < inv_freq.size(); ++i) {
+          if (num_positions > _original_max_position_embeddings)
+            scaling_factor = _rotary_scaling_long_factor.get();
+          else
+            scaling_factor = _rotary_scaling_short_factor.get();
+          inv_freq.at<float>(i) = 1.f / (scaling_factor->at<float>(i) *
+                                         (std::pow(_base, float(i * 2) / float(dim))));
+        }
+      }
+      else {
+        for (dim_t i = 0; i < inv_freq.size(); ++i)
+          inv_freq.at<float>(i) = 1.f / std::pow(_base, float(i * 2) / float(dim));
+        if (_scaling_type == RotaryScalingType::Llama3) {
+          StorageView new_freqs = inv_freq.sync_copy();
+
+          const auto factor = _scaling_factor;
+          const float low_freq_factor = _rotary_low_freq_factor;
+          const float high_freq_factor = _rotary_high_freq_factor;
+          const auto old_context_len = static_cast< float >(_original_max_position_embeddings);
+
+          float low_freq_wavelen = old_context_len / low_freq_factor;
+          float high_freq_wavelen = old_context_len / high_freq_factor;
+          for (dim_t i = 0; i < inv_freq.size(); ++i) {
+            float wavelen = 2.0f * M_PI / inv_freq.at<float>(i);
+            if (wavelen < high_freq_wavelen) {
+              // do nothing as we copied from inv_freq already.
+            } else if (wavelen > low_freq_wavelen) {
+              new_freqs.at<float>(i) /= factor;
+            } else {
+              float smooth = (old_context_len / wavelen - low_freq_factor) / (high_freq_factor - low_freq_factor);
+              auto freq = inv_freq.at<float>(i);
+              new_freqs.at<float>(i) = ((1 - smooth) * freq / factor + smooth * freq);
+            }
+          }
+          inv_freq = std::move(new_freqs);
+        }
+      }
       if (inv_freq.device() != device)
         inv_freq = inv_freq.to(device);
 
       StorageView t({num_positions, 1});
       for (dim_t i = 0; i < t.size(); ++i)
-        t.at<float>(i) = _scaling_type == RotaryScalingType::None ? i : float(i) / _scaling_factor;
+        t.at<float>(i) = _scaling_type != RotaryScalingType::Linear ? i : float(i) / _scaling_factor;
       if (t.device() != device)
         t = t.to(device);
 
@@ -226,8 +311,9 @@ namespace ctranslate2 {
       StorageView emb(device);
       ops::Concat(-1)({&freqs, &freqs}, emb);
 
-      if (_interleave)
+      if (_interleave) {
         emb.reshape({num_positions, dim});
+      }
 
       StorageView sin(device);
       ops::Sin()(emb, sin);
@@ -242,6 +328,18 @@ namespace ctranslate2 {
         _cos = std::move(cos);
       else
         _cos = cos.to(dtype);
+
+      if (_original_max_position_embeddings != 0 && _max_position_embeddings != 0 && _scaling_type != RotaryScalingType::Llama3) {
+        StorageView scaling_factor;
+        float scale = _max_position_embeddings / _original_max_position_embeddings;
+        if (scale <= 1)
+          scaling_factor = StorageView(1.0f, device);
+        else
+          scaling_factor = StorageView(static_cast<float>(sqrt(1 + std::log(scale) / std::log(_original_max_position_embeddings))));
+
+        ops::Mul()(_sin, scaling_factor, _sin);
+        ops::Mul()(_cos, scaling_factor, _cos);
+      }
     }
 
 

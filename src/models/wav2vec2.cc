@@ -35,8 +35,7 @@ namespace ctranslate2 {
     }
 
     bool Wav2Vec2Model::is_quantizable(const std::string& variable_name) const {
-      return (Model::is_quantizable(variable_name)
-              && variable_name.find("conv") == std::string::npos);
+      return Model::is_quantizable(variable_name);
     }
 
     bool Wav2Vec2Model::is_linear_weight(const std::string& variable_name) const {
@@ -91,20 +90,6 @@ namespace ctranslate2 {
       // Ensure all operations are finished before returning the output.
       synchronize_stream(device);
 
-      return encoder_output;
-    }
-
-    StorageView Wav2Vec2Replica::maybe_encode(StorageView features) {
-      const Device device = _model->device();
-      const DataType dtype = _encoder->output_type();
-
-      features.move_to(device, dtype);
-
-      if (_encoder->is_encoded(features))
-        return features;
-
-      StorageView encoder_output(dtype, device);
-      (*_encoder)(features, encoder_output);
       return encoder_output;
     }
 

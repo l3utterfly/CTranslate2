@@ -5,10 +5,16 @@
 namespace ctranslate2 {
   namespace ops {
 
-    Conv1D::Conv1D(dim_t stride, dim_t padding, dim_t dilation)
+    Conv1D::Conv1D(dim_t stride,
+                   dim_t padding,
+                   dim_t dilation,
+                   dim_t groups,
+                   const ActivationType* activation_type)
       : _stride(stride)
       , _padding(padding)
       , _dilation(dilation)
+      , _groups(groups)
+      , _activation_type(activation_type)
     {
     }
 
