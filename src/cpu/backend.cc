@@ -1,5 +1,7 @@
 #include "backend.h"
 
+#include <memory>
+
 #include "ctranslate2/utils.h"
 #include "cpu_info.h"
 #include "env.h"
@@ -106,9 +108,18 @@ namespace ctranslate2 {
     }
 
 #ifdef CT2_WITH_RUY
+    // Created on first use and destroyed by release_ruy_context(), not only by thread exit: the
+    // context owns a thread pool, whose threads are joined on destruction.
+    static thread_local std::unique_ptr<ruy::Context> ruy_context;
+
     ruy::Context *get_ruy_context() {
-      static thread_local ruy::Context context;
-      return &context;
+      if (!ruy_context)
+        ruy_context = std::make_unique<ruy::Context>();
+      return ruy_context.get();
+    }
+
+    void release_ruy_context() {
+      ruy_context.reset();
     }
 #endif
   }

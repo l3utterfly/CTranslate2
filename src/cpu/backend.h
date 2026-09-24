@@ -28,6 +28,9 @@ namespace ctranslate2 {
     bool pack_gemm_weights(ComputeType compute_type);
 #ifdef CT2_WITH_RUY
     ruy::Context *get_ruy_context();
+    // Destroys the calling thread's Ruy context (and its thread pool); see
+    // release_thread_resources() in parallel.h.
+    void release_ruy_context();
 #endif
 
   }

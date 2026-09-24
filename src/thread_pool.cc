@@ -2,6 +2,8 @@
 
 #include "ctranslate2/utils.h"
 
+#include "cpu/parallel.h"
+
 namespace ctranslate2 {
 
   Job::~Job() {
@@ -120,6 +122,9 @@ namespace ctranslate2 {
     }
 
     finalize();
+    // Join this thread's intra-op pools while it is still a normal thread; see
+    // cpu::release_thread_resources().
+    cpu::release_thread_resources();
     local_worker = nullptr;
   }
 

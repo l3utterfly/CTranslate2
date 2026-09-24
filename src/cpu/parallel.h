@@ -35,6 +35,12 @@ namespace ctranslate2 {
     BS::light_thread_pool& get_thread_pool();
 #endif
 
+    // Destroys the calling thread's CPU resources (its intra-op thread pool and Ruy context)
+    // now rather than in thread_local destructors. Worker threads call this before they exit:
+    // on Windows, thread_local destructors run under the loader lock, and joining the pools'
+    // threads there deadlocks (their own exit needs that lock).
+    void release_thread_resources();
+
     template <typename Function>
     inline void parallel_for(const dim_t begin,
                              const dim_t end,
